@@ -1,4 +1,4 @@
-"""
+﻿"""
 Telegram logistics bot (single-file project).
 
 Features:
@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
 
 from aiogram import Bot, Dispatcher, F
 from aiogram import BaseMiddleware
@@ -643,103 +644,169 @@ def parse_chat_id(value: str) -> Optional[int]:
 
 CHAT_USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{5,}$")
 CHAT_PUBLIC_LINK_RE = re.compile(
-    r"^(?:https?://)?(?:t\.me|telegram\.me)/(?:s/)?([A-Za-z0-9_]{5,})(?:/\d+)?/?(?:\?.*)?$"
+    r"^(?:https?://)?(?:t\.me|telegram\.me)/(?:s/)?([A-Za-z0-9_]{5,})(?:/(\d+))?/?(?:\?.*)?$"
 )
 CHAT_INTERNAL_LINK_RE = re.compile(
-    r"^(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)(?:/\d+)?/?(?:\?.*)?$"
+    r"^(?:https?://)?(?:t\.me|telegram\.me)/c/(\d+)(?:/(\d+))?/?(?:\?.*)?$"
 )
 CHAT_INVITE_LINK_RE = re.compile(r"^(?:https?://)?(?:t\.me|telegram\.me)/(?:joinchat/|\+)[A-Za-z0-9_-]+/?$")
+CHAT_NUMERIC_TOPIC_RE = re.compile(r"^(-?\d+)\s*[:/]\s*(\d+)$")
 
 
-def parse_chat_reference(value: str) -> tuple[Optional[int], Optional[str], Optional[str]]:
+def normalize_topic_id(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+        return parsed if parsed > 0 else None
+    return None
+
+
+def extract_topic_id_from_link(raw: str, path_topic: Optional[str]) -> Optional[int]:
+    topic_id = normalize_topic_id(path_topic)
+    if topic_id is not None:
+        return topic_id
+
+    # Ba'zi linklarda topic/thread query param orqali keladi.
+    try:
+        normalized = raw if raw.startswith(("http://", "https://")) else f"https://{raw}"
+        query = parse_qs(urlparse(normalized).query)
+        for key in ("topic", "thread", "message_thread_id"):
+            candidate = normalize_topic_id((query.get(key) or [None])[0])
+            if candidate is not None:
+                return candidate
+    except Exception:  # noqa: BLE001
+        pass
+
+    return None
+
+
+def parse_chat_reference(value: str) -> tuple[Optional[int], Optional[str], Optional[int], Optional[str]]:
     raw = value.strip()
     if not raw:
-        return None, None, "Chat ma'lumoti kiritilmadi."
+        return None, None, None, "Chat ma'lumoti kiritilmadi."
+
+    numeric_with_topic = CHAT_NUMERIC_TOPIC_RE.fullmatch(raw)
+    if numeric_with_topic:
+        chat_id = parse_chat_id(numeric_with_topic.group(1))
+        topic_id = normalize_topic_id(numeric_with_topic.group(2))
+        if chat_id is not None:
+            return chat_id, None, topic_id, None
 
     numeric_id = parse_chat_id(raw)
     if numeric_id is not None:
-        return numeric_id, None, None
+        return numeric_id, None, None, None
 
     if CHAT_USERNAME_RE.fullmatch(raw):
-        return None, raw, None
+        return None, raw, None, None
 
     internal_match = CHAT_INTERNAL_LINK_RE.fullmatch(raw)
     if internal_match:
         internal_id = internal_match.group(1)
-        return int(f"-100{internal_id}"), None, None
+        topic_id = extract_topic_id_from_link(raw, internal_match.group(2))
+        return int(f"-100{internal_id}"), None, topic_id, None
 
     public_match = CHAT_PUBLIC_LINK_RE.fullmatch(raw)
     if public_match:
-        return None, f"@{public_match.group(1)}", None
+        topic_id = extract_topic_id_from_link(raw, public_match.group(2))
+        return None, f"@{public_match.group(1)}", topic_id, None
 
     if CHAT_INVITE_LINK_RE.fullmatch(raw):
-        return None, None, (
+        return None, None, None, (
             "❗ `+` yoki `joinchat` invite-link orqali chat ID avtomatik olinmaydi.\n"
             "Botni o'sha chatga qo'shing va:\n"
             "• chatdan forward xabar yuboring yoki\n"
             "• `@username` / `-100...` yuboring."
         )
 
-    return None, None, (
+    return None, None, None, (
         "Chat formati noto'g'ri.\n"
-        "Qabul qilinadi: `-100...`, `@username`, `https://t.me/username`, `https://t.me/username/123`, `https://t.me/c/...`"
+        "Qabul qilinadi: `-100...`, `-100...:20`, `@username`, `https://t.me/username`, `https://t.me/username/123`, `https://t.me/c/...`"
     )
 
 
-def extract_chat_id_from_message(message: Message) -> Optional[int]:
+def extract_chat_target_from_message(message: Message) -> tuple[Optional[int], Optional[int]]:
+    # Chat ichida yuborilgan komandada current chat + topic id ni ola olamiz.
+    if getattr(message.chat, "type", None) != "private":
+        chat_id = getattr(message.chat, "id", None)
+        if isinstance(chat_id, int):
+            topic_id = normalize_topic_id(getattr(message, "message_thread_id", None))
+            return int(chat_id), topic_id
+
     forwarded_chat = getattr(message, "forward_from_chat", None)
     if forwarded_chat and getattr(forwarded_chat, "id", None):
-        return int(forwarded_chat.id)
+        return int(forwarded_chat.id), None
 
     forward_origin = getattr(message, "forward_origin", None)
     if forward_origin is not None:
         origin_chat = getattr(forward_origin, "chat", None)
         if origin_chat and getattr(origin_chat, "id", None):
-            return int(origin_chat.id)
+            return int(origin_chat.id), None
         origin_sender_chat = getattr(forward_origin, "sender_chat", None)
         if origin_sender_chat and getattr(origin_sender_chat, "id", None):
-            return int(origin_sender_chat.id)
+            return int(origin_sender_chat.id), None
 
     sender_chat = getattr(message, "sender_chat", None)
     if sender_chat and getattr(sender_chat, "id", None):
-        return int(sender_chat.id)
+        return int(sender_chat.id), None
 
     if message.text:
-        return parse_chat_id(message.text)
-    return None
+        numeric_id, _, topic_id, _ = parse_chat_reference(message.text)
+        if numeric_id is not None:
+            return numeric_id, topic_id
+
+    return None, None
 
 
-async def resolve_chat_id_from_text(bot: Bot, value: str) -> tuple[Optional[int], Optional[str]]:
-    numeric_id, username, parse_error = parse_chat_reference(value)
+async def resolve_chat_target_from_text(bot: Bot, value: str) -> tuple[Optional[int], Optional[int], Optional[str]]:
+    numeric_id, username, topic_id, parse_error = parse_chat_reference(value)
     if parse_error:
-        return None, parse_error
+        return None, None, parse_error
     if numeric_id is not None:
-        return numeric_id, None
+        return numeric_id, topic_id, None
     if not username:
-        return None, "Chat topilmadi."
+        return None, None, "Chat topilmadi."
 
     try:
         chat = await bot.get_chat(username)
-        return int(chat.id), None
+        return int(chat.id), topic_id, None
     except Exception:  # noqa: BLE001
-        return None, (
+        return None, None, (
             f"`{username}` chatiga ulanib bo'lmadi.\n"
             "Bot shu chatga qo'shilganini va username to'g'ri ekanini tekshiring."
         )
 
 
-async def resolve_chat_id_from_message(message: Message) -> tuple[Optional[int], Optional[str]]:
-    direct_chat_id = extract_chat_id_from_message(message)
+async def resolve_chat_id_from_text(bot: Bot, value: str) -> tuple[Optional[int], Optional[str]]:
+    chat_id, _, error = await resolve_chat_target_from_text(bot, value)
+    return chat_id, error
+
+
+async def resolve_chat_target_from_message(message: Message) -> tuple[Optional[int], Optional[int], Optional[str]]:
+    direct_chat_id, direct_topic_id = extract_chat_target_from_message(message)
     if direct_chat_id is not None:
-        return direct_chat_id, None
+        return direct_chat_id, direct_topic_id, None
 
     if not message.text:
-        return None, (
+        return None, None, (
             "Chat ID topilmadi.\n"
-            "ID (`-100...`), `@username`, `https://t.me/...` link yoki forward xabar yuboring."
+            "ID (`-100...`), `-100...:20`, `@username`, `https://t.me/...` link yoki forward xabar yuboring."
         )
 
-    return await resolve_chat_id_from_text(message.bot, message.text)
+    return await resolve_chat_target_from_text(message.bot, message.text)
+
+
+async def resolve_chat_id_from_message(message: Message) -> tuple[Optional[int], Optional[str]]:
+    chat_id, _, error = await resolve_chat_target_from_message(message)
+    return chat_id, error
+
+
+def format_chat_target(chat_id: int, topic_id: Optional[int]) -> str:
+    if topic_id is None:
+        return f"{chat_id}"
+    return f"{chat_id} (topic:{topic_id})"
 
 
 def normalize_send_error(exc: Exception) -> str:
@@ -782,6 +849,14 @@ async def check_chat_writable(bot: Bot, chat_id: int) -> tuple[bool, str]:
     if can_send is False:
         return False, "Bot bu guruhda yozishga cheklangan."
     return True, "Chatga yuborish huquqi bor."
+
+
+async def chat_is_forum(bot: Bot, chat_id: int) -> bool:
+    try:
+        chat = await bot.get_chat(chat_id)
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(getattr(chat, "is_forum", False))
 
 
 def extract_start_payload(text: Optional[str]) -> Optional[str]:
@@ -1269,10 +1344,11 @@ async def init_database() -> None:
     await cargo_col.create_index("price")
 
     await region_channels_col.create_index("chat_id")
+    await region_channels_col.create_index("topic_id")
 
     await settings_col.update_one(
         {"_id": "catalog_chat"},
-        {"$setOnInsert": {"chat_id": None, "updated_at": now_utc()}},
+        {"$setOnInsert": {"chat_id": None, "topic_id": None, "updated_at": now_utc()}},
         upsert=True,
     )
     await settings_col.update_one(
@@ -1284,7 +1360,7 @@ async def init_database() -> None:
     for region in REGIONS:
         await region_channels_col.update_one(
             {"_id": region},
-            {"$setOnInsert": {"region": region, "chat_id": None, "updated_at": now_utc()}},
+            {"$setOnInsert": {"region": region, "chat_id": None, "topic_id": None, "updated_at": now_utc()}},
             upsert=True,
         )
 
@@ -1450,30 +1526,32 @@ def build_cargo_post_text(cargo: dict[str, Any], owner: dict[str, Any], cargo_id
     )
 
 
-async def get_catalog_chat_id() -> Optional[int]:
+async def get_catalog_target() -> tuple[Optional[int], Optional[int]]:
     doc = await settings_col.find_one({"_id": "catalog_chat"})
     if not doc:
-        return None
+        return None, None
     chat_id = doc.get("chat_id")
-    return chat_id if isinstance(chat_id, int) else None
+    topic_id = normalize_topic_id(doc.get("topic_id"))
+    return (chat_id if isinstance(chat_id, int) else None), topic_id
 
 
-async def get_region_chat_id(region: str) -> Optional[int]:
+async def get_region_target(region: str) -> tuple[Optional[int], Optional[int]]:
     doc = await region_channels_col.find_one({"_id": region})
     if not doc:
-        return None
+        return None, None
     chat_id = doc.get("chat_id")
-    return chat_id if isinstance(chat_id, int) else None
+    topic_id = normalize_topic_id(doc.get("topic_id"))
+    return (chat_id if isinstance(chat_id, int) else None), topic_id
 
 
-async def resolve_target_chats(from_region: str, to_region: str) -> list[int]:
+async def resolve_target_chats(from_region: str, to_region: str) -> list[dict[str, Any]]:
     # Route posting rule:
     # Post only to the origin region chat.
     # Example: Andijon -> Toshkent  => only Andijon chat.
-    from_chat = await get_region_chat_id(from_region)
+    from_chat, from_topic = await get_region_target(from_region)
     if from_chat is None:
         return []
-    return [from_chat]
+    return [{"chat_id": from_chat, "topic_id": from_topic, "region": from_region}]
 
 
 async def publish_cargo(
@@ -1481,21 +1559,31 @@ async def publish_cargo(
     cargo: dict[str, Any],
     owner: dict[str, Any],
     cargo_id: str,
-) -> tuple[list[int], list[str]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     text = build_cargo_post_text(cargo, owner, cargo_id)
     bot_username = await get_bot_username(bot)
     inline_markup = build_cargo_inline_keyboard(bot_username, cargo_id)
     target_chats = await resolve_target_chats(cargo["from_region"], cargo["to_region"])
 
-    sent: list[int] = []
+    sent: list[dict[str, Any]] = []
     failed: list[str] = []
 
-    for chat_id in target_chats:
+    for target in target_chats:
+        chat_id = int(target["chat_id"])
+        topic_id = normalize_topic_id(target.get("topic_id"))
         try:
-            await bot.send_message(chat_id=chat_id, text=text, reply_markup=inline_markup, disable_web_page_preview=True)
-            sent.append(chat_id)
+            send_payload: dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": text,
+                "reply_markup": inline_markup,
+                "disable_web_page_preview": True,
+            }
+            if topic_id is not None:
+                send_payload["message_thread_id"] = topic_id
+            await bot.send_message(**send_payload)
+            sent.append({"chat_id": chat_id, "topic_id": topic_id})
         except Exception as exc:  # noqa: BLE001
-            failed.append(f"{chat_id}: {normalize_send_error(exc)}")
+            failed.append(f"{format_chat_target(chat_id, topic_id)}: {normalize_send_error(exc)}")
 
     return sent, failed
 
@@ -1520,24 +1608,34 @@ async def get_market_price_rows(limit: int = 5, days: int = 30) -> list[dict[str
 
 
 async def admin_channels_overview_text() -> str:
-    catalog = await get_catalog_chat_id()
+    catalog_chat, catalog_topic = await get_catalog_target()
     region_docs = await region_channels_col.find({}).sort("_id", 1).to_list(length=50)
     mandatory_channels = await get_mandatory_channels()
 
     connected = 0
     missing: list[str] = []
+    used_targets: dict[tuple[int, Optional[int]], list[str]] = {}
     lines = [
         "🌐 <b>Kanal/Guruh ulanishi</b>",
-        f"📚 Katalog chat: <code>{catalog}</code>" if catalog is not None else "📚 Katalog chat: <b>Ulanmagan</b>",
+        (
+            f"📚 Katalog chat: <code>{catalog_chat}</code>"
+            + (f" | topic: <code>{catalog_topic}</code>" if catalog_topic is not None else "")
+        )
+        if catalog_chat is not None
+        else "📚 Katalog chat: <b>Ulanmagan</b>",
         "",
     ]
 
     for doc in region_docs:
         region = doc["_id"]
         chat_id = doc.get("chat_id")
+        topic_id = normalize_topic_id(doc.get("topic_id"))
         if isinstance(chat_id, int):
             connected += 1
-            lines.append(f"✅ {safe(region)}: <code>{chat_id}</code>")
+            extra = f" | topic: <code>{topic_id}</code>" if topic_id is not None else ""
+            lines.append(f"✅ {safe(region)}: <code>{chat_id}</code>{extra}")
+            key = (chat_id, topic_id)
+            used_targets.setdefault(key, []).append(region)
         else:
             missing.append(region)
             lines.append(f"❌ {safe(region)}: ulanmagan")
@@ -1551,6 +1649,13 @@ async def admin_channels_overview_text() -> str:
 
     if missing:
         lines.append("⚠️ Ulanmagan: " + ", ".join(safe(x) for x in missing))
+
+    duplicate_targets = [regions for regions in used_targets.values() if len(regions) > 1]
+    if duplicate_targets:
+        lines.append("⚠️ Bir xil chat/topic bir nechta viloyatga ulangan:")
+        for regions in duplicate_targets[:5]:
+            lines.append("• " + ", ".join(safe(x) for x in regions))
+        lines.append("Forum guruhda har viloyat uchun alohida topic link kiriting.")
 
     lines.append("")
     lines.append(f"📌 Majburiy kanallar: <b>{len(mandatory_channels)}</b>")
@@ -1574,15 +1679,17 @@ def build_admin_guide_text() -> str:
         "3) Katalog kanal/guruh ulash",
         "• `🛠 Admin panel` -> `🌐 Kanal/Guruh sozlash` -> `📚 Katalog chat ID`.",
         "• Keyin quyidagidan birini yuboring:",
-        "  - Chat ID (`-100...`) raqami",
+        "  - Chat ID (`-100...`) raqami yoki topic bilan: `-100...:20`",
         "  - `@username` yoki `https://t.me/username` link",
-        "  - `https://t.me/username/123` yoki `https://t.me/c/...` message link",
+        "  - `https://t.me/username/123` yoki `https://t.me/c/...` message link (topic uchun tavsiya)",
         "  - Yoki shu kanal/guruhdan forward qilingan istalgan post/xabar",
         "",
         "4) 12 viloyat chatlarini ulash",
         "• `🛠 Admin panel` -> `🌐 Kanal/Guruh sozlash` -> `🗺 Viloyat chat ID`.",
         "• Viloyatni tanlang.",
-        "• Chat ID (`-100...`) yoki `@username`/`https://t.me/...` link yuboring.",
+        "• Chat ID (`-100...`) yoki `-100...:20` yuboring.",
+        "• Yoki `@username`/`https://t.me/...` link yuboring.",
+        "• Topic bo'lsa `https://t.me/username/20` ko'rinishida yuboring.",
         "• Yoki o'sha viloyat chatidan forward qilingan xabar yuboring.",
         "• Har bir viloyat uchun takrorlang (12/12).",
         "",
@@ -1608,9 +1715,13 @@ def build_admin_guide_text() -> str:
         "",
         "9) Tezkor komandalar",
         "• `/set_catalog -1001234567890`",
+        "• `/set_catalog -1001234567890:20`",
         "• `/set_catalog https://t.me/kanal_username`",
+        "• `/set_catalog https://t.me/kanal_username/20`",
         "• `/set_region Toshkent -1001234567890`",
+        "• `/set_region Toshkent -1001234567890:20`",
         "• `/set_region Toshkent https://t.me/toshkent_group`",
+        "• `/set_region Toshkent https://t.me/toshkent_group/20`",
         "• `/set_region Qashqadaryo -1001234567890`",
         "• bot ichida chat ID ko'rish: `/chat_id`",
         "",
@@ -2412,19 +2523,23 @@ async def admin_set_catalog_chat(message: Message, state: FSMContext) -> None:
     if not await require_admin(message):
         await state.clear()
         return
-    chat_id, error = await resolve_chat_id_from_message(message)
+    chat_id, topic_id, error = await resolve_chat_target_from_message(message)
     if chat_id is None:
         await message.answer(error or "Chat ID topilmadi.")
         return
 
     await settings_col.update_one(
         {"_id": "catalog_chat"},
-        {"$set": {"chat_id": chat_id, "updated_at": now_utc()}},
+        {"$set": {"chat_id": chat_id, "topic_id": topic_id, "updated_at": now_utc()}},
         upsert=True,
     )
     await state.clear()
     ok, status_text = await check_chat_writable(message.bot, chat_id)
     text = [f"✅ Katalog chat saqlandi: <code>{chat_id}</code>"]
+    if topic_id is not None:
+        text.append(f"🧵 Topic: <code>{topic_id}</code>")
+    if await chat_is_forum(message.bot, chat_id) and topic_id is None:
+        text.append("⚠️ Bu forum guruh. Katalog ham topicga tushishi uchun topic ID/link kiriting.")
     if ok:
         text.append(f"✅ Tekshiruv: {safe(status_text)}")
     else:
@@ -2443,8 +2558,9 @@ async def admin_select_region(message: Message, state: FSMContext) -> None:
     await state.set_state(AdminChannelFSM.region_chat)
     await message.answer(
         f"{safe(region)} uchun chatni ulang.\n"
-        "• `-100...` chat ID yuboring yoki\n"
-        "• `@username` / `https://t.me/...` link yuboring yoki\n"
+        "• `-100...` yoki `-100...:20` yuboring yoki\n"
+        "• `@username` / `https://t.me/...` link yuboring\n"
+        "  (topic uchun: `https://t.me/username/20`) yoki\n"
         "• Shu viloyat chatidan forward qilingan xabar yuboring.",
         reply_markup=cancel_keyboard(),
     )
@@ -2455,7 +2571,7 @@ async def admin_set_region_chat(message: Message, state: FSMContext) -> None:
     if not await require_admin(message):
         await state.clear()
         return
-    chat_id, error = await resolve_chat_id_from_message(message)
+    chat_id, topic_id, error = await resolve_chat_target_from_message(message)
     if chat_id is None:
         await message.answer(error or "Chat ID topilmadi.")
         return
@@ -2468,12 +2584,16 @@ async def admin_set_region_chat(message: Message, state: FSMContext) -> None:
 
     await region_channels_col.update_one(
         {"_id": region},
-        {"$set": {"region": region, "chat_id": chat_id, "updated_at": now_utc()}},
+        {"$set": {"region": region, "chat_id": chat_id, "topic_id": topic_id, "updated_at": now_utc()}},
         upsert=True,
     )
     await state.clear()
     ok, status_text = await check_chat_writable(message.bot, chat_id)
     text = [f"✅ {safe(region)} chati saqlandi: <code>{chat_id}</code>"]
+    if topic_id is not None:
+        text.append(f"🧵 Topic: <code>{topic_id}</code>")
+    if await chat_is_forum(message.bot, chat_id) and topic_id is None:
+        text.append("⚠️ Bu forum guruh. Viloyat uchun topic ID/link kiriting.")
     if ok:
         text.append(f"✅ Tekshiruv: {safe(status_text)}")
     else:
@@ -2763,8 +2883,9 @@ async def admin_catalog_start(message: Message, state: FSMContext) -> None:
     await state.set_state(AdminChannelFSM.catalog_chat)
     await message.answer(
         "Katalog chatni ulang.\n"
-        "• `-100...` chat ID yuboring yoki\n"
-        "• `@username` / `https://t.me/...` link yuboring yoki\n"
+        "• `-100...` yoki `-100...:20` yuboring yoki\n"
+        "• `@username` / `https://t.me/...` link yuboring\n"
+        "  (topic uchun: `https://t.me/username/20`) yoki\n"
         "• Katalog kanal/guruhdan forward qilingan xabar yuboring.",
         reply_markup=cancel_keyboard(),
     )
@@ -2928,21 +3049,27 @@ async def admin_set_catalog_command(message: Message) -> None:
         await message.answer(
             "Format:\n"
             "• <code>/set_catalog -1001234567890</code>\n"
+            "• <code>/set_catalog -1001234567890:20</code>\n"
             "• <code>/set_catalog @kanal_username</code>\n"
-            "• <code>/set_catalog https://t.me/kanal_username</code>"
+            "• <code>/set_catalog https://t.me/kanal_username</code>\n"
+            "• <code>/set_catalog https://t.me/kanal_username/20</code>"
         )
         return
-    chat_id, error = await resolve_chat_id_from_text(message.bot, parts[1])
+    chat_id, topic_id, error = await resolve_chat_target_from_text(message.bot, parts[1])
     if chat_id is None:
         await message.answer(error or "Chat ID noto'g'ri.")
         return
     await settings_col.update_one(
         {"_id": "catalog_chat"},
-        {"$set": {"chat_id": chat_id, "updated_at": now_utc()}},
+        {"$set": {"chat_id": chat_id, "topic_id": topic_id, "updated_at": now_utc()}},
         upsert=True,
     )
     ok, status_text = await check_chat_writable(message.bot, chat_id)
     text = [f"✅ Katalog chat saqlandi: <code>{chat_id}</code>"]
+    if topic_id is not None:
+        text.append(f"🧵 Topic: <code>{topic_id}</code>")
+    if await chat_is_forum(message.bot, chat_id) and topic_id is None:
+        text.append("⚠️ Bu forum guruh. Katalog uchun topic ID/link ham kiriting.")
     if ok:
         text.append(f"✅ Tekshiruv: {safe(status_text)}")
     else:
@@ -2959,11 +3086,13 @@ async def admin_set_region_command(message: Message) -> None:
         await message.answer(
             "Format:\n"
             "• <code>/set_region Toshkent -1001234567890</code>\n"
+            "• <code>/set_region Toshkent -1001234567890:20</code>\n"
             "• <code>/set_region Toshkent @toshkent_group</code>\n"
-            "• <code>/set_region Toshkent https://t.me/toshkent_group</code>"
+            "• <code>/set_region Toshkent https://t.me/toshkent_group</code>\n"
+            "• <code>/set_region Toshkent https://t.me/toshkent_group/20</code>"
         )
         return
-    chat_id, error = await resolve_chat_id_from_text(message.bot, parts[-1])
+    chat_id, topic_id, error = await resolve_chat_target_from_text(message.bot, parts[-1])
     if chat_id is None:
         await message.answer(error or "Chat ID noto'g'ri.")
         return
@@ -2974,11 +3103,15 @@ async def admin_set_region_command(message: Message) -> None:
         return
     await region_channels_col.update_one(
         {"_id": region},
-        {"$set": {"region": region, "chat_id": chat_id, "updated_at": now_utc()}},
+        {"$set": {"region": region, "chat_id": chat_id, "topic_id": topic_id, "updated_at": now_utc()}},
         upsert=True,
     )
     ok, status_text = await check_chat_writable(message.bot, chat_id)
     text = [f"✅ {safe(region)} chati saqlandi: <code>{chat_id}</code>"]
+    if topic_id is not None:
+        text.append(f"🧵 Topic: <code>{topic_id}</code>")
+    if await chat_is_forum(message.bot, chat_id) and topic_id is None:
+        text.append("⚠️ Bu forum guruh. Viloyat uchun topic ID/link kiriting.")
     if ok:
         text.append(f"✅ Tekshiruv: {safe(status_text)}")
     else:
@@ -2995,13 +3128,18 @@ async def admin_set_catalog_here(message: Message) -> None:
         return
 
     chat_id = int(message.chat.id)
+    topic_id = normalize_topic_id(getattr(message, "message_thread_id", None))
     await settings_col.update_one(
         {"_id": "catalog_chat"},
-        {"$set": {"chat_id": chat_id, "updated_at": now_utc()}},
+        {"$set": {"chat_id": chat_id, "topic_id": topic_id, "updated_at": now_utc()}},
         upsert=True,
     )
     ok, status_text = await check_chat_writable(message.bot, chat_id)
     text = [f"✅ Shu chat katalog sifatida saqlandi: <code>{chat_id}</code>"]
+    if topic_id is not None:
+        text.append(f"🧵 Topic: <code>{topic_id}</code>")
+    if await chat_is_forum(message.bot, chat_id) and topic_id is None:
+        text.append("⚠️ Bu forum guruh. Katalog topicga tushishi uchun buyruqni topic ichida yuboring.")
     if ok:
         text.append(f"✅ Tekshiruv: {safe(status_text)}")
     else:
@@ -3028,13 +3166,18 @@ async def admin_set_region_here(message: Message) -> None:
         return
 
     chat_id = int(message.chat.id)
+    topic_id = normalize_topic_id(getattr(message, "message_thread_id", None))
     await region_channels_col.update_one(
         {"_id": region},
-        {"$set": {"region": region, "chat_id": chat_id, "updated_at": now_utc()}},
+        {"$set": {"region": region, "chat_id": chat_id, "topic_id": topic_id, "updated_at": now_utc()}},
         upsert=True,
     )
     ok, status_text = await check_chat_writable(message.bot, chat_id)
     text = [f"✅ {safe(region)} uchun shu chat saqlandi: <code>{chat_id}</code>"]
+    if topic_id is not None:
+        text.append(f"🧵 Topic: <code>{topic_id}</code>")
+    if await chat_is_forum(message.bot, chat_id) and topic_id is None:
+        text.append("⚠️ Bu forum guruh. To'g'ri topic ichida `/set_region_here Viloyat` yuboring.")
     if ok:
         text.append(f"✅ Tekshiruv: {safe(status_text)}")
     else:
@@ -3045,13 +3188,16 @@ async def admin_set_region_here(message: Message) -> None:
 @dp.message(Command("chat_id"))
 async def cmd_chat_id(message: Message) -> None:
     chat_username = f"@{message.chat.username}" if message.chat.username else "yo'q"
-    await message.answer(
-        "🆔 <b>Chat ma'lumoti</b>\n"
-        f"• Chat ID: <code>{message.chat.id}</code>\n"
-        f"• Type: <code>{message.chat.type}</code>\n"
-        f"• Username: <code>{safe(chat_username)}</code>"
-    )
-
+    topic_id = normalize_topic_id(getattr(message, "message_thread_id", None))
+    lines = [
+        "🆔 <b>Chat ma'lumoti</b>",
+        f"• Chat ID: <code>{message.chat.id}</code>",
+        f"• Type: <code>{message.chat.type}</code>",
+        f"• Username: <code>{safe(chat_username)}</code>",
+    ]
+    if topic_id is not None:
+        lines.insert(2, f"• Topic ID: <code>{topic_id}</code>")
+    await message.answer("\n".join(lines))
 
 @dp.callback_query(F.data == "check_sub")
 async def callback_check_sub(callback: CallbackQuery) -> None:
