@@ -1,25 +1,4 @@
-﻿"""
-Telegram logistics bot (single-file project).
-
-Features:
-- User onboarding with /start (name, surname, phone, role)
-- Driver profile form
-- Cargo posting form for shippers
-- Auto-post cargo to catalog chat + region chats (12 regions)
-- Profile, profile analysis, market statistics
-- Pro subscription management
-- Admin panel with broadcast, stats, pro controls, channel mapping
-
-Environment variables:
-- BOT_TOKEN=...
-- MONGODB_URI=mongodb://127.0.0.1:27017
-- MONGODB_DB=logistik_bot
-- ADMIN_IDS=123456789,987654321
-- SUPPORT_CONTACT=@your_support
-- NEWS_CHANNEL=https://t.me/your_channel
-"""
-
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import logging
@@ -126,6 +105,7 @@ BTN_CANCEL = "❌ Bekor qilish"
 BTN_BACK_MAIN = "⬅️ Asosiy menyu"
 BTN_BACK_ADMIN = "🔙 Admin panel"
 BTN_SKIP = "⏭ O'tkazib yuborish"
+BTN_PRICE_NEGOTIABLE = "🤝 Kelishiladi"
 
 BTN_ADMIN_PANEL = "🛠 Admin panel"
 BTN_BROADCAST = "📣 Habar yuborish"
@@ -199,6 +179,7 @@ RU_BUTTON_TEXTS = {
     BTN_BACK_MAIN: "⬅️ Главное меню",
     BTN_BACK_ADMIN: "🔙 Админ панель",
     BTN_SKIP: "⏭ Пропустить",
+    BTN_PRICE_NEGOTIABLE: "🤝 Договорная",
     BTN_ADMIN_PANEL: "🛠 Админ панель",
     BTN_BROADCAST: "📣 Рассылка",
     BTN_ADMIN_STATS: "📊 Системная статистика",
@@ -297,7 +278,7 @@ RU_TEXT_TRANSLATIONS = {
     "Yuk turini kiriting (masalan: sement, mebel, oziq-ovqat):": "Введите тип груза (например: цемент, мебель, продукты):",
     "Og'irligini kiriting (tonna):": "Введите вес (тонна):",
     "Hajmini kiriting (m3):": "Введите объем (м3):",
-    "Taklif narxini kiriting (so'm):": "Введите предлагаемую цену (сум):",
+    "Taklif narxini kiriting (so'm) yoki `🤝 Kelishiladi` ni tanlang:": "Введите предлагаемую цену (сум) или выберите `🤝 Договорная`:",
     "Yuklash sanasi (masalan: 25.02.2026 yoki bugun):": "Дата загрузки (например: 25.02.2026 или сегодня):",
     "To'lov turini tanlang:": "Выберите способ оплаты:",
     "Qo'shimcha izoh (ixtiyoriy):": "Дополнительный комментарий (необязательно):",
@@ -306,7 +287,8 @@ RU_TEXT_TRANSLATIONS = {
     "Raqam kiriting. Masalan: 86": "Введите число. Например: 86",
     "Raqam kiriting. Masalan: 22": "Введите число. Например: 22",
     "Raqam kiriting. Masalan: 20": "Введите число. Например: 20",
-    "Narxni raqamda kiriting. Masalan: 2500000": "Введите цену числом. Например: 2500000",
+    "Narxni raqamda kiriting yoki `🤝 Kelishiladi` ni tanlang.": "Введите цену числом или выберите `🤝 Договорная`.",
+    "🤝 Kelishiladi": "🤝 Договорная",
     "Yuklash sanasini kiriting.": "Введите дату загрузки.",
     "To'lov turini tugmadan tanlang.": "Выберите тип оплаты кнопкой.",
     "Yuk turini to'liqroq kiriting.": "Укажите тип груза подробнее.",
@@ -426,12 +408,8 @@ class CargoFSM(StatesGroup):
     to_region = State()
     cargo_type = State()
     weight_ton = State()
-    volume_m3 = State()
     price = State()
-    load_date = State()
-    payment_type = State()
     comment = State()
-    confirm = State()
 
 
 class SettingsFSM(StatesGroup):
@@ -1086,6 +1064,14 @@ def format_money(value: Optional[float]) -> str:
     return f"{value:,.0f}".replace(",", " ")
 
 
+def format_cargo_price(value: Any, negotiable: Any = False) -> str:
+    if bool(negotiable):
+        return BTN_PRICE_NEGOTIABLE
+    if isinstance(value, (int, float)):
+        return f"{format_money(float(value))} so'm"
+    return "Noma'lum"
+
+
 def safe(value: Any) -> str:
     if value is None:
         return "-"
@@ -1168,6 +1154,16 @@ def skip_cancel_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_SKIP)],
+            [KeyboardButton(text=BTN_CANCEL)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def price_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_PRICE_NEGOTIABLE)],
             [KeyboardButton(text=BTN_CANCEL)],
         ],
         resize_keyboard=True,
@@ -1485,16 +1481,14 @@ def mask_phone(phone: Any) -> str:
 
 
 def build_cargo_preview(data: dict[str, Any]) -> str:
+    price_text = format_cargo_price(data.get("price"), data.get("price_negotiable"))
     return (
         "📦 <b>Yuk e'loni preview</b>\n"
         f"📍 Qayerdan: <b>{safe(data.get('from_region'))}</b>\n"
         f"🏁 Qayerga: <b>{safe(data.get('to_region'))}</b>\n"
         f"📦 Yuk turi: <b>{safe(data.get('cargo_type'))}</b>\n"
         f"⚖️ Og'irligi: <b>{safe(data.get('weight_ton'))} tonna</b>\n"
-        f"📐 Hajmi: <b>{safe(data.get('volume_m3'))} m3</b>\n"
-        f"💰 Narx: <b>{format_money(data.get('price'))} so'm</b>\n"
-        f"📅 Yuklash sanasi: <b>{safe(data.get('load_date'))}</b>\n"
-        f"💳 To'lov turi: <b>{safe(data.get('payment_type'))}</b>\n"
+        f"💰 Narx: <b>{safe(price_text)}</b>\n"
         f"📝 Izoh: <b>{safe(data.get('comment'))}</b>\n"
     )
 
@@ -1505,6 +1499,7 @@ def build_cargo_post_text(cargo: dict[str, Any], owner: dict[str, Any], cargo_id
     created_at = normalize_datetime(cargo.get("created_at")) or now_utc()
     timestamp = created_at.strftime("%d.%m.%Y %H:%M")
     route_tag = re.sub(r"[^a-zA-Z0-9_]", "", f"{cargo['from_region']}_{cargo['to_region']}".replace(" ", "_"))
+    price_text = format_cargo_price(cargo.get("price"), cargo.get("price_negotiable"))
 
     return (
         "📦 <b>YANGI YUK E'LONI</b>\n"
@@ -1514,10 +1509,7 @@ def build_cargo_post_text(cargo: dict[str, Any], owner: dict[str, Any], cargo_id
         f"🏁 <b>Qayerga:</b> {safe(cargo.get('to_region'))}\n"
         f"📦 <b>Yuk turi:</b> {safe(cargo.get('cargo_type'))}\n"
         f"⚖️ <b>Og'irlik:</b> {safe(cargo.get('weight_ton'))} tonna\n"
-        f"📐 <b>Hajm:</b> {safe(cargo.get('volume_m3'))} m3\n"
-        f"💰 <b>Narx:</b> {format_money(cargo.get('price'))} so'm\n"
-        f"📅 <b>Yuklash:</b> {safe(cargo.get('load_date'))}\n"
-        f"💳 <b>To'lov:</b> {safe(cargo.get('payment_type'))}\n"
+        f"💰 <b>Narx:</b> {safe(price_text)}\n"
         f"📝 <b>Izoh:</b> {safe(cargo.get('comment'))}\n"
         f"👤 <b>Yuk beruvchi:</b> {safe(owner_name)}\n"
         f"📞 <b>Aloqa:</b> {safe(mask_phone(owner.get('phone')))} (nomer tugmada)\n"
@@ -2225,79 +2217,39 @@ async def cargo_weight(message: Message, state: FSMContext) -> None:
         await message.answer("Raqam kiriting. Masalan: 22")
         return
     await state.update_data(weight_ton=value)
-    await state.set_state(CargoFSM.volume_m3)
-    await message.answer("📐 Hajmini kiriting (m3):")
-
-
-@dp.message(CargoFSM.volume_m3)
-async def cargo_volume(message: Message, state: FSMContext) -> None:
-    value = parse_positive_number(message.text or "")
-    if value is None:
-        await message.answer("Raqam kiriting. Masalan: 86")
-        return
-    await state.update_data(volume_m3=value)
     await state.set_state(CargoFSM.price)
-    await message.answer("💰 Taklif narxini kiriting (so'm):")
+    await message.answer(
+        "💰 Taklif narxini kiriting (so'm) yoki `🤝 Kelishiladi` ni tanlang:",
+        reply_markup=price_keyboard(),
+    )
 
 
 @dp.message(CargoFSM.price)
 async def cargo_price(message: Message, state: FSMContext) -> None:
-    value = parse_positive_number(message.text or "")
-    if value is None:
-        await message.answer("Narxni raqamda kiriting. Masalan: 2500000")
-        return
-    await state.update_data(price=value)
-    await state.set_state(CargoFSM.load_date)
-    await message.answer("📅 Yuklash sanasi (masalan: 25.02.2026 yoki bugun):")
-
-
-@dp.message(CargoFSM.load_date)
-async def cargo_load_date(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
-    if len(text) < 2:
-        await message.answer("Yuklash sanasini kiriting.")
-        return
-    await state.update_data(load_date=text)
-    await state.set_state(CargoFSM.payment_type)
-    await message.answer("💳 To'lov turini tanlang:", reply_markup=payment_keyboard())
-
-
-@dp.message(CargoFSM.payment_type)
-async def cargo_payment(message: Message, state: FSMContext) -> None:
-    text = (message.text or "").strip()
-    if text not in PAYMENT_OPTIONS:
-        await message.answer("To'lov turini tugmadan tanlang.", reply_markup=payment_keyboard())
-        return
-    await state.update_data(payment_type=text)
+    if text == BTN_PRICE_NEGOTIABLE:
+        await state.update_data(price=None, price_negotiable=True)
+    else:
+        value = parse_positive_number(text)
+        if value is None:
+            await message.answer(
+                "Narxni raqamda kiriting yoki `🤝 Kelishiladi` ni tanlang.",
+                reply_markup=price_keyboard(),
+            )
+            return
+        await state.update_data(price=value, price_negotiable=False)
     await state.set_state(CargoFSM.comment)
     await message.answer("📝 Qo'shimcha izoh (ixtiyoriy):", reply_markup=skip_cancel_keyboard())
 
 
 @dp.message(CargoFSM.comment)
 async def cargo_comment(message: Message, state: FSMContext) -> None:
-    text = (message.text or "").strip()
-    comment = "-" if text == BTN_SKIP else text
-    await state.update_data(comment=comment)
-
-    data = await state.get_data()
-    await state.set_state(CargoFSM.confirm)
-    await message.answer(build_cargo_preview(data), reply_markup=cargo_confirm_keyboard())
-
-
-@dp.message(CargoFSM.confirm)
-async def cargo_confirm(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
 
     text = (message.text or "").strip()
-    if text == BTN_CARGO_EDIT:
-        await state.set_state(CargoFSM.from_region)
-        await message.answer("Tahrirlash boshlandi. Qayerdan yuklanadi?", reply_markup=region_keyboard())
-        return
-
-    if text != BTN_CARGO_CONFIRM:
-        await message.answer("Pastdagi tugmalardan birini tanlang.", reply_markup=cargo_confirm_keyboard())
-        return
+    comment = "-" if text == BTN_SKIP or not text else text
+    await state.update_data(comment=comment)
 
     data = await state.get_data()
     await state.clear()
@@ -2313,10 +2265,8 @@ async def cargo_confirm(message: Message, state: FSMContext) -> None:
         "to_region": data["to_region"],
         "cargo_type": data["cargo_type"],
         "weight_ton": data["weight_ton"],
-        "volume_m3": data["volume_m3"],
         "price": data["price"],
-        "load_date": data["load_date"],
-        "payment_type": data["payment_type"],
+        "price_negotiable": bool(data.get("price_negotiable")),
         "comment": data["comment"],
         "created_at": now_utc(),
         "status": "active",
