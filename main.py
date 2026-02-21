@@ -147,8 +147,6 @@ MENU_INTERRUPT_BUTTONS = (
     BTN_MENU_CARGO,
     BTN_MENU_DRIVER,
     BTN_MENU_PROFILE,
-    BTN_MENU_ANALYSIS,
-    BTN_MENU_STATS,
     BTN_MENU_PRO,
     BTN_MENU_NEWS,
     BTN_MENU_CONTACT,
@@ -1106,8 +1104,6 @@ def main_menu_keyboard(is_admin: bool) -> ReplyKeyboardMarkup:
         BTN_MENU_CARGO,
         BTN_MENU_DRIVER,
         BTN_MENU_PROFILE,
-        BTN_MENU_ANALYSIS,
-        BTN_MENU_STATS,
         BTN_MENU_PRO,
         BTN_MENU_NEWS,
         BTN_MENU_CONTACT,
@@ -1921,12 +1917,6 @@ async def route_menu_button(message: Message, state: FSMContext, text: str) -> N
     if text == BTN_MENU_PROFILE:
         await show_profile(message)
         return
-    if text == BTN_MENU_ANALYSIS:
-        await show_profile_analysis(message)
-        return
-    if text == BTN_MENU_STATS:
-        await show_stats(message)
-        return
     if text == BTN_MENU_CARGO:
         await menu_cargo(message, state)
         return
@@ -2566,95 +2556,6 @@ async def show_profile(message: Message) -> None:
     await message.answer(build_profile_text(user), reply_markup=main_menu_keyboard(await is_admin_user(message.from_user.id)))
 
 
-@dp.message(StateFilter(None), Command("tahlil"))
-@dp.message(StateFilter(None), F.text == BTN_MENU_ANALYSIS)
-async def show_profile_analysis(message: Message) -> None:
-    if not message.from_user:
-        return
-    if not await ensure_mandatory_subscription_message(message):
-        return
-    user = await ensure_user(message.from_user)
-    if not user.get("profile_completed"):
-        await message.answer("Profilingiz tugallanmagan. /start ni bosing.")
-        return
-
-    score, missing = profile_completeness(user)
-    cargo_total = await cargo_col.count_documents({"owner_id": message.from_user.id})
-    cargo_30 = await cargo_col.count_documents({"owner_id": message.from_user.id, "created_at": {"$gte": now_utc() - timedelta(days=30)}})
-
-    lines = [
-        "🧠 <b>Profil tahlili</b>",
-        f"📊 To'liqlik: <b>{score}%</b>",
-        f"📦 Jami e'lonlar: <b>{cargo_total}</b>",
-        f"🗓 Oxirgi 30 kun: <b>{cargo_30}</b>",
-    ]
-
-    if missing:
-        lines.append("⚠️ Yetishmayotgan ma'lumotlar: " + ", ".join(safe(x) for x in missing))
-    else:
-        lines.append("✅ Profil to'liq.")
-
-    if user.get("role") == ROLE_DRIVER and score < 100:
-        lines.append("💡 Tavsiya: mashina parametrlarini to'liq kiritsangiz buyurtma topish ehtimoli oshadi.")
-    elif user.get("role") == ROLE_SHIPPER and cargo_total == 0:
-        lines.append("💡 Tavsiya: birinchi yuk e'lonini joylashtiring.")
-
-    await message.answer("\n".join(lines), reply_markup=main_menu_keyboard(await is_admin_user(message.from_user.id)))
-
-
-@dp.message(StateFilter(None), Command("statistika"))
-@dp.message(StateFilter(None), F.text == BTN_MENU_STATS)
-async def show_stats(message: Message) -> None:
-    if not message.from_user:
-        return
-    if not await ensure_mandatory_subscription_message(message):
-        return
-    user = await ensure_user(message.from_user)
-    if not user.get("profile_completed"):
-        await message.answer("Profilingiz tugallanmagan. /start ni bosing.")
-        return
-
-    uid = message.from_user.id
-    now = now_utc()
-    my_total, my_30, my_avg_rows = await asyncio.gather(
-        cargo_col.count_documents({"owner_id": uid}),
-        cargo_col.count_documents({"owner_id": uid, "created_at": {"$gte": now - timedelta(days=30)}}),
-        cargo_col.aggregate(
-            [
-                {"$match": {"owner_id": uid, "price": {"$type": "number"}}},
-                {"$group": {"_id": None, "avg_price": {"$avg": "$price"}}},
-            ]
-        ).to_list(length=1),
-    )
-
-    market_rows = await get_market_price_rows(limit=5, days=30)
-    my_avg = my_avg_rows[0]["avg_price"] if my_avg_rows else None
-
-    lines = [
-        "📊 <b>Statistika</b>",
-        "",
-        f"📦 Sizning jami e'lonlaringiz: <b>{my_total}</b>",
-        f"🗓 Oxirgi 30 kun: <b>{my_30}</b>",
-        f"💰 O'rtacha narx: <b>{format_money(my_avg)} so'm</b>",
-        "",
-        "💹 <b>Narx-navo (bozor, 30 kun)</b>",
-    ]
-
-    if market_rows:
-        for i, row in enumerate(market_rows, start=1):
-            route_from = row["_id"].get("from", "-")
-            route_to = row["_id"].get("to", "-")
-            lines.append(
-                f"{i}. {safe(route_from)} -> {safe(route_to)} | "
-                f"{row['count']} ta | min {format_money(row['min_price'])} | "
-                f"avg {format_money(row['avg_price'])} | max {format_money(row['max_price'])}"
-            )
-    else:
-        lines.append("Hozircha statistik ma'lumot yetarli emas.")
-
-    await message.answer("\n".join(lines), reply_markup=main_menu_keyboard(await is_admin_user(uid)))
-
-
 @dp.message(StateFilter(None), Command("yuk"))
 @dp.message(StateFilter(None), F.text == BTN_MENU_CARGO)
 async def menu_cargo(message: Message, state: FSMContext) -> None:
@@ -3207,8 +3108,6 @@ async def on_startup(bot: Bot) -> None:
         BotCommand(command="start", description="Botni ishga tushirish"),
         BotCommand(command="profil", description="Profilni ko'rish"),
         BotCommand(command="yuk", description="Yuk joylash"),
-        BotCommand(command="tahlil", description="Profil tahlili"),
-        BotCommand(command="statistika", description="Statistika"),
         BotCommand(command="admin", description="Admin panel"),
         BotCommand(command="admin_help", description="Admin yo'riqnoma"),
         BotCommand(command="lang", description="Til / Язык"),
