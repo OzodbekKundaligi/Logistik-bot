@@ -275,6 +275,8 @@ RU_TEXT_TRANSLATIONS = {
     "Yuk qayerga boradi? Viloyatni tanlang:": "Куда отправляется груз? Выберите область:",
     "Yuk turini kiriting (masalan: sement, mebel, oziq-ovqat):": "Введите тип груза (например: цемент, мебель, продукты):",
     "Og'irligini kiriting (tonna):": "Введите вес (тонна):",
+    "Kerakli mashina turini kiriting (masalan: fura, tent, isuzu):": "Введите нужный тип машины (например: фура, тент, isuzu):",
+    "Mashina turini to'liqroq kiriting.": "Введите тип машины подробнее.",
     "Hajmini kiriting (m3):": "Введите объем (м3):",
     "Taklif narxini kiriting (so'm) yoki `🤝 Kelishiladi` ni tanlang:": "Введите предлагаемую цену (сум) или выберите `🤝 Договорная`:",
     "Yuklash sanasi (masalan: 25.02.2026 yoki bugun):": "Дата загрузки (например: 25.02.2026 или сегодня):",
@@ -405,7 +407,7 @@ class CargoFSM(StatesGroup):
     from_region = State()
     to_region = State()
     cargo_type = State()
-    weight_ton = State()
+    vehicle_type = State()
     price = State()
     comment = State()
 
@@ -1483,7 +1485,7 @@ def build_cargo_preview(data: dict[str, Any]) -> str:
         f"📍 Qayerdan: <b>{safe(data.get('from_region'))}</b>\n"
         f"🏁 Qayerga: <b>{safe(data.get('to_region'))}</b>\n"
         f"📦 Yuk turi: <b>{safe(data.get('cargo_type'))}</b>\n"
-        f"⚖️ Og'irligi: <b>{safe(data.get('weight_ton'))} tonna</b>\n"
+        f"🚛 Kerakli mashina: <b>{safe(data.get('vehicle_type'))}</b>\n"
         f"💰 Narx: <b>{safe(price_text)}</b>\n"
         f"📝 Izoh: <b>{safe(data.get('comment'))}</b>\n"
     )
@@ -1504,7 +1506,7 @@ def build_cargo_post_text(cargo: dict[str, Any], owner: dict[str, Any], cargo_id
         f"📍 <b>Qayerdan:</b> {safe(cargo.get('from_region'))}\n"
         f"🏁 <b>Qayerga:</b> {safe(cargo.get('to_region'))}\n"
         f"📦 <b>Yuk turi:</b> {safe(cargo.get('cargo_type'))}\n"
-        f"⚖️ <b>Og'irlik:</b> {safe(cargo.get('weight_ton'))} tonna\n"
+        f"🚛 <b>Kerakli mashina:</b> {safe(cargo.get('vehicle_type'))}\n"
         f"💰 <b>Narx:</b> {safe(price_text)}\n"
         f"📝 <b>Izoh:</b> {safe(cargo.get('comment'))}\n"
         f"👤 <b>Yuk beruvchi:</b> {safe(owner_name)}\n"
@@ -2196,17 +2198,17 @@ async def cargo_type(message: Message, state: FSMContext) -> None:
         await message.answer("Yuk turini to'liqroq kiriting.")
         return
     await state.update_data(cargo_type=text)
-    await state.set_state(CargoFSM.weight_ton)
-    await message.answer("⚖️ Og'irligini kiriting (tonna):")
+    await state.set_state(CargoFSM.vehicle_type)
+    await message.answer("🚛 Kerakli mashina turini kiriting (masalan: fura, tent, isuzu):")
 
 
-@dp.message(CargoFSM.weight_ton)
-async def cargo_weight(message: Message, state: FSMContext) -> None:
-    value = parse_positive_number(message.text or "")
-    if value is None:
-        await message.answer("Raqam kiriting. Masalan: 22")
+@dp.message(CargoFSM.vehicle_type)
+async def cargo_vehicle_type(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if len(text) < 2:
+        await message.answer("Mashina turini to'liqroq kiriting.")
         return
-    await state.update_data(weight_ton=value)
+    await state.update_data(vehicle_type=text)
     await state.set_state(CargoFSM.price)
     await message.answer(
         "💰 Taklif narxini kiriting (so'm) yoki `🤝 Kelishiladi` ni tanlang:",
@@ -2254,7 +2256,7 @@ async def cargo_comment(message: Message, state: FSMContext) -> None:
         "from_region": data["from_region"],
         "to_region": data["to_region"],
         "cargo_type": data["cargo_type"],
-        "weight_ton": data["weight_ton"],
+        "vehicle_type": data["vehicle_type"],
         "price": data["price"],
         "price_negotiable": bool(data.get("price_negotiable")),
         "comment": data["comment"],
