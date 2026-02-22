@@ -1492,27 +1492,31 @@ def build_cargo_preview(data: dict[str, Any]) -> str:
 
 
 def build_cargo_post_text(cargo: dict[str, Any], owner: dict[str, Any], cargo_id: str) -> str:
-    pro_badge = "💎 <b>PRO E'LON</b>\n" if is_pro_active(owner) else ""
-    owner_name = f"{owner.get('first_name') or ''} {owner.get('last_name') or ''}".strip() or "Noma'lum"
-    created_at = normalize_datetime(cargo.get("created_at")) or now_utc()
-    timestamp = created_at.strftime("%d.%m.%Y %H:%M")
-    route_tag = re.sub(r"[^a-zA-Z0-9_]", "", f"{cargo['from_region']}_{cargo['to_region']}".replace(" ", "_"))
+    from_region = str(cargo.get("from_region") or "-")
+    to_region = str(cargo.get("to_region") or "-")
+    cargo_type = str(cargo.get("cargo_type") or "-")
+    vehicle_type = str(cargo.get("vehicle_type") or "-")
+    comment = str(cargo.get("comment") or "-")
+
+    def _tag(raw: str) -> str:
+        tag = re.sub(r"[^a-zA-Z0-9_]", "", raw.replace(" ", "_")).lower().strip("_")
+        return tag or "logistika"
+
+    route_tag = _tag(f"{from_region}_{to_region}")
+    vehicle_tag = _tag(vehicle_type)
+    cargo_tag = _tag(cargo_type)
     price_text = format_cargo_price(cargo.get("price"), cargo.get("price_negotiable"))
+    comment_line = f"\n📝 {safe(comment)}" if comment and comment != "-" else ""
+    pro_badge = "💎 PRO\n" if is_pro_active(owner) else ""
 
     return (
-        "📦 <b>YANGI YUK E'LONI</b>\n"
         f"{pro_badge}"
-        f"🆔 <code>{safe(cargo_id)}</code>\n"
-        f"📍 <b>Qayerdan:</b> {safe(cargo.get('from_region'))}\n"
-        f"🏁 <b>Qayerga:</b> {safe(cargo.get('to_region'))}\n"
-        f"📦 <b>Yuk turi:</b> {safe(cargo.get('cargo_type'))}\n"
-        f"🚛 <b>Kerakli mashina:</b> {safe(cargo.get('vehicle_type'))}\n"
-        f"💰 <b>Narx:</b> {safe(price_text)}\n"
-        f"📝 <b>Izoh:</b> {safe(cargo.get('comment'))}\n"
-        f"👤 <b>Yuk beruvchi:</b> {safe(owner_name)}\n"
-        f"📞 <b>Aloqa:</b> {safe(mask_phone(owner.get('phone')))} (nomer tugmada)\n"
-        f"🕒 <i>{timestamp}</i>\n\n"
-        f"#{route_tag} #logistika #yuk"
+        f"📦 <b>{safe(from_region)} → {safe(to_region)}</b>\n"
+        f"🚛 {safe(vehicle_type)} | 📦 {safe(cargo_type)}\n"
+        f"💰 {safe(price_text)}"
+        f"{comment_line}\n"
+        f"📞 {safe(mask_phone(owner.get('phone')))}\n"
+        f"#{route_tag} #{vehicle_tag} #{cargo_tag}"
     )
 
 
