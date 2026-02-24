@@ -606,9 +606,31 @@ def normalize_datetime(value: Any) -> Optional[datetime]:
 
 def parse_phone(value: str) -> Optional[str]:
     cleaned = re.sub(r"\s+", "", value.strip())
-    if re.fullmatch(r"\+?\d{9,15}", cleaned):
-        return cleaned
+    if not cleaned:
+        return None
+    if cleaned.startswith("+"):
+        digits = cleaned[1:]
+    else:
+        digits = cleaned
+    if re.fullmatch(r"\d{9,15}", digits):
+        return f"+{digits}"
     return None
+
+
+def format_phone_for_display(value: Any) -> str:
+    if value is None:
+        return "-"
+    raw = str(value).strip()
+    if not raw:
+        return "-"
+    cleaned = re.sub(r"\s+", "", raw)
+    if cleaned.startswith("+"):
+        digits = cleaned[1:]
+        if re.fullmatch(r"\d{9,15}", digits):
+            return f"+{digits}"
+    elif re.fullmatch(r"\d{9,15}", cleaned):
+        return f"+{cleaned}"
+    return raw
 
 
 def parse_positive_number(value: str) -> Optional[float]:
@@ -1057,7 +1079,7 @@ async def handle_start_payload(message: Message, payload: str) -> None:
         f"📍 Yo'nalish: <b>{safe(cargo.get('from_region'))} -> {safe(cargo.get('to_region'))}</b>",
         f"🚛 Kerakli mashina: <b>{safe(cargo.get('vehicle_type'))}</b>",
         f"👤 Ism: <b>{safe(owner_name)}</b>",
-        f"📞 Telefon: <b>{safe(owner.get('phone'))}</b>",
+        f"📞 Telefon: <b>{safe(format_phone_for_display(owner.get('phone')))}</b>",
     ]
 
     keyboard: Optional[InlineKeyboardMarkup] = None
@@ -1433,7 +1455,7 @@ def build_profile_text(user: dict[str, Any]) -> str:
         f"🆔 ID: <code>{user['_id']}</code>",
         f"🙍 Ism: <b>{safe(user.get('first_name'))}</b>",
         f"🙍 Familiya: <b>{safe(user.get('last_name'))}</b>",
-        f"📱 Telefon: <b>{safe(user.get('phone'))}</b>",
+        f"📱 Telefon: <b>{safe(format_phone_for_display(user.get('phone')))}</b>",
         f"🎯 Rol: <b>{safe(role_label(user.get('role')))}</b>",
         f"💎 Status: <b>{'PRO' if is_pro_active(user) else 'Oddiy'}</b>",
     ]
@@ -1483,9 +1505,9 @@ def profile_completeness(user: dict[str, Any]) -> tuple[int, list[str]]:
 
 
 def mask_phone(phone: Any) -> str:
-    if not phone:
-        return "-"
-    s = str(phone)
+    s = format_phone_for_display(phone)
+    if s == "-":
+        return s
     if len(s) <= 5:
         return s
     return f"{s[:5]}{'*' * max(3, len(s) - 8)}{s[-3:]}"
