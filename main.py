@@ -112,6 +112,7 @@ BTN_BROADCAST = "📣 Habar yuborish"
 BTN_ADMIN_STATS = "📊 Tizim statistikasi"
 BTN_ADMIN_USERS = "📋 Foydalanuvchilar"
 BTN_ADMIN_PRO = "💎 Pro boshqaruvi"
+BTN_ADMIN_ADD = "👑 Admin qo'shish"
 BTN_ADMIN_CHANNELS = "🌐 Kanal/Guruh sozlash"
 BTN_ADMIN_GUIDE = "📘 Admin yo'riqnoma"
 BTN_PRO_ADD = "➕ Pro qo'shish"
@@ -158,6 +159,7 @@ MENU_INTERRUPT_BUTTONS = (
     BTN_ADMIN_USERS,
     BTN_BROADCAST,
     BTN_ADMIN_PRO,
+    BTN_ADMIN_ADD,
     BTN_PRO_ADD,
     BTN_PRO_REMOVE,
     BTN_ADMIN_CHANNELS,
@@ -183,6 +185,7 @@ RU_BUTTON_TEXTS = {
     BTN_ADMIN_STATS: "📊 Системная статистика",
     BTN_ADMIN_USERS: "📋 Пользователи",
     BTN_ADMIN_PRO: "💎 Управление Pro",
+    BTN_ADMIN_ADD: "👑 Добавить админа",
     BTN_ADMIN_CHANNELS: "🌐 Настройка каналов/групп",
     BTN_ADMIN_GUIDE: "📘 Инструкция админа",
     BTN_PRO_ADD: "➕ Добавить Pro",
@@ -344,11 +347,19 @@ RU_TEXT_TRANSLATIONS = {
     "Format": "Формат",
     "Masalan": "Например",
     "Noto'g'ri format. Raqam kiriting.": "Неверный формат. Введите число.",
+    "Faqat user_id kiriting. Masalan: <code>123456789</code>": "Введите только user_id. Например: <code>123456789</code>",
+    "user_id 0 dan katta bo'lishi kerak.": "user_id должен быть больше 0.",
     "Kun soni 0 dan katta bo'lishi kerak.": "Количество дней должно быть больше 0.",
     "Tugash sanasi": "Дата окончания",
     "Tugash": "Окончание",
     "Pro qo'shildi.": "Pro добавлен.",
     "Pro o'chirildi": "Pro удален",
+    "Admin qo'shish": "Добавление админа",
+    "Admin qo'shish uchun user_id yuboring. Masalan: <code>123456789</code>": "Отправьте user_id для добавления админа. Например: <code>123456789</code>",
+    "Bu foydalanuvchi allaqachon admin": "Этот пользователь уже админ",
+    "Admin qo'shildi": "Админ добавлен",
+    "Sizga admin huquqi berildi.": "Вам выданы права администратора.",
+    "Xatolik: admins kolleksiyasi ulanmagan.": "Ошибка: коллекция admins недоступна.",
     "Katalog chat saqlandi": "Чат каталога сохранен",
     "chati saqlandi": "чат сохранен",
     "chat saqlandi": "чат сохранен",
@@ -406,10 +417,7 @@ class DriverFSM(StatesGroup):
 class CargoFSM(StatesGroup):
     from_region = State()
     to_region = State()
-    cargo_type = State()
     vehicle_type = State()
-    price = State()
-    comment = State()
 
 
 class SettingsFSM(StatesGroup):
@@ -424,6 +432,10 @@ class AdminBroadcastFSM(StatesGroup):
 class AdminProFSM(StatesGroup):
     add = State()
     remove = State()
+
+
+class AdminAccessFSM(StatesGroup):
+    add = State()
 
 
 class AdminChannelFSM(StatesGroup):
@@ -1043,7 +1055,7 @@ async def handle_start_payload(message: Message, payload: str) -> None:
     lines = [
         "📨 <b>E'lon bo'yicha aloqa</b>",
         f"📍 Yo'nalish: <b>{safe(cargo.get('from_region'))} -> {safe(cargo.get('to_region'))}</b>",
-        f"📦 Yuk: <b>{safe(cargo.get('cargo_type'))}</b>",
+        f"🚛 Kerakli mashina: <b>{safe(cargo.get('vehicle_type'))}</b>",
         f"👤 Ism: <b>{safe(owner_name)}</b>",
         f"📞 Telefon: <b>{safe(owner.get('phone'))}</b>",
     ]
@@ -1214,7 +1226,8 @@ def admin_panel_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=BTN_BROADCAST)],
             [KeyboardButton(text=BTN_ADMIN_STATS), KeyboardButton(text=BTN_ADMIN_USERS)],
-            [KeyboardButton(text=BTN_ADMIN_PRO), KeyboardButton(text=BTN_ADMIN_CHANNELS)],
+            [KeyboardButton(text=BTN_ADMIN_PRO), KeyboardButton(text=BTN_ADMIN_ADD)],
+            [KeyboardButton(text=BTN_ADMIN_CHANNELS)],
             [KeyboardButton(text=BTN_ADMIN_GUIDE)],
             [KeyboardButton(text=BTN_BACK_MAIN)],
         ],
@@ -1479,24 +1492,18 @@ def mask_phone(phone: Any) -> str:
 
 
 def build_cargo_preview(data: dict[str, Any]) -> str:
-    price_text = format_cargo_price(data.get("price"), data.get("price_negotiable"))
     return (
         "📦 <b>Yuk e'loni preview</b>\n"
         f"📍 Qayerdan: <b>{safe(data.get('from_region'))}</b>\n"
         f"🏁 Qayerga: <b>{safe(data.get('to_region'))}</b>\n"
-        f"📦 Yuk turi: <b>{safe(data.get('cargo_type'))}</b>\n"
         f"🚛 Kerakli mashina: <b>{safe(data.get('vehicle_type'))}</b>\n"
-        f"💰 Narx: <b>{safe(price_text)}</b>\n"
-        f"📝 Izoh: <b>{safe(data.get('comment'))}</b>\n"
     )
 
 
 def build_cargo_post_text(cargo: dict[str, Any], owner: dict[str, Any], cargo_id: str) -> str:
     from_region = str(cargo.get("from_region") or "-")
     to_region = str(cargo.get("to_region") or "-")
-    cargo_type = str(cargo.get("cargo_type") or "-")
     vehicle_type = str(cargo.get("vehicle_type") or "-")
-    comment = str(cargo.get("comment") or "-")
 
     def _tag(raw: str) -> str:
         tag = re.sub(r"[^a-zA-Z0-9_]", "", raw.replace(" ", "_")).lower().strip("_")
@@ -1504,19 +1511,15 @@ def build_cargo_post_text(cargo: dict[str, Any], owner: dict[str, Any], cargo_id
 
     route_tag = _tag(f"{from_region}_{to_region}")
     vehicle_tag = _tag(vehicle_type)
-    cargo_tag = _tag(cargo_type)
-    price_text = format_cargo_price(cargo.get("price"), cargo.get("price_negotiable"))
-    comment_line = f"\n📝 {safe(comment)}" if comment and comment != "-" else ""
     pro_badge = "💎 PRO\n" if is_pro_active(owner) else ""
 
     return (
         f"{pro_badge}"
         f"📦 <b>{safe(from_region)} → {safe(to_region)}</b>\n"
-        f"🚛 {safe(vehicle_type)} | 📦 {safe(cargo_type)}\n"
-        f"💰 {safe(price_text)}"
-        f"{comment_line}\n"
+        f"🚛 {safe(vehicle_type)}\n"
         f"📞 {safe(mask_phone(owner.get('phone')))}\n"
-        f"#{route_tag} #{vehicle_tag} #{cargo_tag}"
+        f"#{route_tag} #{vehicle_tag}\n"
+        f"🆔 <code>{safe(cargo_id)}</code>"
     )
 
 
@@ -1669,6 +1672,7 @@ def build_admin_guide_text() -> str:
         "2) Admin panelga kirish",
         "• Admin foydalanuvchida asosiy menyuda `🛠 Admin panel` tugmasi chiqadi.",
         "• Oddiy foydalanuvchida bu tugma chiqmaydi.",
+        "• Yangi admin qo'shish: `🛠 Admin panel` -> `👑 Admin qo'shish` -> `user_id` yuboring.",
         "",
         "3) Katalog kanal/guruh ulash",
         "• `🛠 Admin panel` -> `🌐 Kanal/Guruh sozlash` -> `📚 Katalog chat ID`.",
@@ -1965,6 +1969,9 @@ async def route_menu_button(message: Message, state: FSMContext, text: str) -> N
     if text == BTN_ADMIN_PRO:
         await admin_pro_menu(message)
         return
+    if text == BTN_ADMIN_ADD:
+        await admin_add_start(message, state)
+        return
     if text == BTN_PRO_ADD:
         await admin_pro_add_start(message, state)
         return
@@ -2191,61 +2198,23 @@ async def cargo_to_region(message: Message, state: FSMContext) -> None:
         await message.answer("Viloyatni tugmadan tanlang.", reply_markup=region_keyboard())
         return
     await state.update_data(to_region=region)
-    await state.set_state(CargoFSM.cargo_type)
-    await message.answer("📦 Yuk turini kiriting (masalan: sement, mebel, oziq-ovqat):", reply_markup=cancel_keyboard())
-
-
-@dp.message(CargoFSM.cargo_type)
-async def cargo_type(message: Message, state: FSMContext) -> None:
-    text = (message.text or "").strip()
-    if len(text) < 2:
-        await message.answer("Yuk turini to'liqroq kiriting.")
-        return
-    await state.update_data(cargo_type=text)
     await state.set_state(CargoFSM.vehicle_type)
-    await message.answer("🚛 Kerakli mashina turini kiriting (masalan: fura, tent, isuzu):")
+    await message.answer(
+        "🚛 Kerakli mashina turini kiriting (masalan: fura, tent, isuzu):",
+        reply_markup=cancel_keyboard(),
+    )
 
 
 @dp.message(CargoFSM.vehicle_type)
 async def cargo_vehicle_type(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        return
+
     text = (message.text or "").strip()
     if len(text) < 2:
         await message.answer("Mashina turini to'liqroq kiriting.")
         return
     await state.update_data(vehicle_type=text)
-    await state.set_state(CargoFSM.price)
-    await message.answer(
-        "💰 Taklif narxini kiriting (so'm) yoki `🤝 Kelishiladi` ni tanlang:",
-        reply_markup=price_keyboard(),
-    )
-
-
-@dp.message(CargoFSM.price)
-async def cargo_price(message: Message, state: FSMContext) -> None:
-    text = (message.text or "").strip()
-    if text == BTN_PRICE_NEGOTIABLE:
-        await state.update_data(price=None, price_negotiable=True)
-    else:
-        value = parse_positive_number(text)
-        if value is None:
-            await message.answer(
-                "Narxni raqamda kiriting yoki `🤝 Kelishiladi` ni tanlang.",
-                reply_markup=price_keyboard(),
-            )
-            return
-        await state.update_data(price=value, price_negotiable=False)
-    await state.set_state(CargoFSM.comment)
-    await message.answer("📝 Qo'shimcha izoh (ixtiyoriy):", reply_markup=skip_cancel_keyboard())
-
-
-@dp.message(CargoFSM.comment)
-async def cargo_comment(message: Message, state: FSMContext) -> None:
-    if not message.from_user:
-        return
-
-    text = (message.text or "").strip()
-    comment = "-" if text == BTN_SKIP or not text else text
-    await state.update_data(comment=comment)
 
     data = await state.get_data()
     await state.clear()
@@ -2259,11 +2228,7 @@ async def cargo_comment(message: Message, state: FSMContext) -> None:
         "owner_id": message.from_user.id,
         "from_region": data["from_region"],
         "to_region": data["to_region"],
-        "cargo_type": data["cargo_type"],
         "vehicle_type": data["vehicle_type"],
-        "price": data["price"],
-        "price_negotiable": bool(data.get("price_negotiable")),
-        "comment": data["comment"],
         "created_at": now_utc(),
         "status": "active",
     }
@@ -2290,7 +2255,7 @@ async def cargo_comment(message: Message, state: FSMContext) -> None:
     ]
 
     if not sent:
-        lines.append("⚠️ Hech bir chat ulanmagan. Admin paneldan katalog/viloyat chat ID larni kiriting.")
+        lines.append("⚠️ Hech bir viloyat chati ulanmagan. Admin paneldan viloyat chat ID larini kiriting.")
     if failed:
         lines.append(f"❗ Yuborishda xatolar: <b>{len(failed)}</b>")
         preview_errors = failed[:3]
@@ -2460,6 +2425,54 @@ async def admin_pro_remove_state(message: Message, state: FSMContext) -> None:
 
     try:
         await message.bot.send_message(chat_id=user_id, text="ℹ️ Sizning PRO statusingiz bekor qilindi.")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@dp.message(AdminAccessFSM.add)
+async def admin_add_state(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        await state.clear()
+        return
+    if not await require_admin(message):
+        await state.clear()
+        return
+    if admins_col is None:
+        await state.clear()
+        await message.answer("Xatolik: admins kolleksiyasi ulanmagan.", reply_markup=admin_panel_keyboard())
+        return
+
+    raw = (message.text or "").strip()
+    if not raw.lstrip("-").isdigit():
+        await message.answer("Faqat user_id kiriting. Masalan: <code>123456789</code>")
+        return
+
+    user_id = int(raw)
+    if user_id <= 0:
+        await message.answer("user_id 0 dan katta bo'lishi kerak.")
+        return
+    if await is_admin_user(user_id):
+        await message.answer(f"ℹ️ Bu foydalanuvchi allaqachon admin: <code>{user_id}</code>")
+        return
+
+    now = now_utc()
+    await admins_col.update_one(
+        {"_id": user_id},
+        {
+            "$set": {
+                "added_by": message.from_user.id,
+                "updated_at": now,
+            },
+            "$setOnInsert": {"created_at": now},
+        },
+        upsert=True,
+    )
+
+    await state.clear()
+    await message.answer(f"✅ Admin qo'shildi: <code>{user_id}</code>", reply_markup=admin_panel_keyboard())
+
+    try:
+        await message.bot.send_message(chat_id=user_id, text="👑 Sizga admin huquqi berildi.")
     except Exception:  # noqa: BLE001
         pass
 
@@ -2708,6 +2721,14 @@ async def admin_pro_menu(message: Message) -> None:
     if not await require_admin(message):
         return
     await message.answer("💎 Pro boshqaruvi", reply_markup=admin_pro_keyboard())
+
+
+@dp.message(StateFilter(None), F.text == BTN_ADMIN_ADD)
+async def admin_add_start(message: Message, state: FSMContext) -> None:
+    if not await require_admin(message):
+        return
+    await state.set_state(AdminAccessFSM.add)
+    await message.answer("Admin qo'shish uchun user_id yuboring. Masalan: <code>123456789</code>", reply_markup=cancel_keyboard())
 
 
 @dp.message(StateFilter(None), F.text == BTN_PRO_ADD)
