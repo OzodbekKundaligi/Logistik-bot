@@ -60,6 +60,7 @@ REGIONS = [
     "Toshkent",
     "Xorazm",
 ]
+MAX_DRIVER_ROUTE_FILTERS = 15
 
 ROLE_DRIVER = "driver"
 ROLE_SHIPPER = "shipper"
@@ -298,6 +299,8 @@ RU_TEXT_TRANSLATIONS = {
     "Mashina turi juda qisqa. Qayta kiriting:": "Тип машины слишком короткий. Введите снова:",
     "Qaysi yo'nalishlarda ishlaysiz? (masalan: Toshkent-Samarqand-Farg'ona)": "По каким маршрутам работаете? (например: Ташкент-Самарканд-Фергана)",
     "Yo'nalishni to'liqroq yozing.": "Укажите маршрут подробнее.",
+    "Yo'nalishlarni kiriting (masalan: Toshkent-Andijon yoki Toshkent-Andijon, Samarqand-Buxoro)": "Укажите маршруты (например: Ташкент-Андижан или Ташкент-Андижан, Самарканд-Бухара)",
+    "Yo'nalishni formatda kiriting. Masalan: Toshkent-Andijon yoki Toshkent-Andijon, Samarqand-Buxoro": "Укажите маршрут в формате. Например: Ташкент-Андижан или Ташкент-Андижан, Самарканд-Бухара",
     "1 km uchun narx (ixtiyoriy):": "Цена за 1 км (необязательно):",
     "Raqam kiriting yoki `⏭ O'tkazib yuborish` ni bosing.": "Введите число или нажмите `⏭ Пропустить`.",
     "Sozlamalar:": "Настройки:",
@@ -377,6 +380,10 @@ RU_TEXT_TRANSLATIONS = {
     "Qaysi auditoriyaga yuborilsin?": "Кому отправить рассылку?",
     "Yuboriladigan xabarni yuboring (text/photo/video ham bo'lishi mumkin).": "Отправьте сообщение для рассылки (можно текст/фото/видео).",
     "Broadcast yakunlandi.": "Рассылка завершена.",
+    "Siz belgilagan yo'nalishga mos yangi yuk e'loni!": "Новое объявление по вашему маршруту!",
+    "Mos haydovchilarga yuborildi": "Отправлено подходящим водителям",
+    "Bu yo'nalish bo'yicha filtr qo'ygan haydovchi topilmadi.": "По этому маршруту не найдено водителей с фильтром.",
+    "Haydovchilarga yuborishda xatolar": "Ошибки отправки водителям",
     "Admin statistika": "Статистика администратора",
     "Foydalanuvchilar:": "Пользователи:",
     "Haydovchilar:": "Водители:",
@@ -1135,6 +1142,84 @@ def normalize_region(raw: str) -> Optional[str]:
     return None
 
 
+def parse_driver_route_filters(raw: str, *, max_pairs: int = MAX_DRIVER_ROUTE_FILTERS) -> list[dict[str, str]]:
+    chunks = [chunk.strip() for chunk in re.split(r"[,;\n]+", raw) if chunk.strip()]
+    route_filters: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for chunk in chunks:
+        parts = [part.strip() for part in re.split(r"\s*(?:->|=>|→|>|-|—|–)\s*", chunk) if part.strip()]
+        if len(parts) < 2:
+            continue
+
+        regions: list[str] = []
+        for part in parts:
+            region = normalize_region(part)
+            if not region:
+                regions = []
+                break
+            regions.append(region)
+        if len(regions) < 2:
+            continue
+
+        for idx in range(len(regions) - 1):
+            key = (regions[idx], regions[idx + 1])
+            if key in seen:
+                continue
+            seen.add(key)
+            route_filters.append({"from": key[0], "to": key[1]})
+            if len(route_filters) >= max_pairs:
+                return route_filters
+
+    return route_filters
+
+
+def normalize_driver_route_filters(value: Any, *, max_pairs: int = MAX_DRIVER_ROUTE_FILTERS) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+
+    route_filters: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        from_region = normalize_region(str(item.get("from") or ""))
+        to_region = normalize_region(str(item.get("to") or ""))
+        if not from_region or not to_region:
+            continue
+        key = (from_region, to_region)
+        if key in seen:
+            continue
+        seen.add(key)
+        route_filters.append({"from": from_region, "to": to_region})
+        if len(route_filters) >= max_pairs:
+            break
+    return route_filters
+
+
+def get_driver_route_filters(driver_profile: dict[str, Any]) -> list[dict[str, str]]:
+    route_filters = normalize_driver_route_filters(driver_profile.get("route_filters"))
+    if route_filters:
+        return route_filters
+
+    raw_routes = driver_profile.get("routes")
+    if isinstance(raw_routes, str):
+        return parse_driver_route_filters(raw_routes)
+    return []
+
+
+def format_driver_route_filters(route_filters: list[dict[str, str]]) -> str:
+    labels = [f"{item['from']} -> {item['to']}" for item in route_filters if item.get("from") and item.get("to")]
+    return ", ".join(labels) if labels else "-"
+
+
+def driver_matches_route(driver_profile: dict[str, Any], from_region: str, to_region: str) -> bool:
+    for item in get_driver_route_filters(driver_profile):
+        if item["from"] == from_region and item["to"] == to_region:
+            return True
+    return False
+
+
 def main_menu_keyboard(is_admin: bool) -> ReplyKeyboardMarkup:
     buttons = [
         BTN_MENU_CARGO,
@@ -1462,6 +1547,7 @@ def build_profile_text(user: dict[str, Any]) -> str:
 
     if user.get("role") == ROLE_DRIVER:
         driver = user.get("driver_profile") or {}
+        route_labels = format_driver_route_filters(get_driver_route_filters(driver))
         lines.extend(
             [
                 "",
@@ -1469,7 +1555,7 @@ def build_profile_text(user: dict[str, Any]) -> str:
                 f"• Turi: {safe(driver.get('car_type'))}",
                 f"• Sig'imi: {safe(driver.get('capacity_ton'))} tonna",
                 f"• Hajmi: {safe(driver.get('volume_m3'))} m3",
-                f"• Yo'nalish: {safe(driver.get('routes'))}",
+                f"• Yo'nalish: {safe(route_labels)}",
                 f"• Narx/km: {safe(driver.get('price_per_km'))}",
                 f"• Izoh: {safe(driver.get('note'))}",
             ]
@@ -1493,7 +1579,7 @@ def profile_completeness(user: dict[str, Any]) -> tuple[int, list[str]]:
                 ("Mashina turi", bool(driver.get("car_type"))),
                 ("Yuk sig'imi", bool(driver.get("capacity_ton"))),
                 ("Hajmi", bool(driver.get("volume_m3"))),
-                ("Yo'nalish", bool(driver.get("routes"))),
+                ("Yo'nalish", bool(driver.get("routes") or normalize_driver_route_filters(driver.get("route_filters")))),
             ]
         )
 
@@ -1603,6 +1689,83 @@ async def publish_cargo(
             sent.append({"chat_id": chat_id, "topic_id": topic_id})
         except Exception as exc:  # noqa: BLE001
             failed.append(f"{format_chat_target(chat_id, topic_id)}: {normalize_send_error(exc)}")
+
+    return sent, failed
+
+
+async def find_matching_drivers(from_region: str, to_region: str) -> list[dict[str, Any]]:
+    if users_col is None:
+        return []
+
+    matched: dict[int, dict[str, Any]] = {}
+    query = {
+        "role": ROLE_DRIVER,
+        "profile_completed": True,
+        "driver_profile.route_filters": {"$elemMatch": {"from": from_region, "to": to_region}},
+    }
+    async for user in users_col.find(query):
+        user_id = user.get("_id")
+        if isinstance(user_id, int):
+            matched[user_id] = user
+
+    fallback_query = {
+        "role": ROLE_DRIVER,
+        "profile_completed": True,
+        "driver_profile.routes": {"$type": "string", "$ne": ""},
+    }
+    async for user in users_col.find(fallback_query):
+        user_id = user.get("_id")
+        if not isinstance(user_id, int) or user_id in matched:
+            continue
+        driver_profile = user.get("driver_profile")
+        if not isinstance(driver_profile, dict):
+            continue
+        if normalize_driver_route_filters(driver_profile.get("route_filters")):
+            continue
+        if driver_matches_route(driver_profile, from_region, to_region):
+            matched[user_id] = user
+
+    return list(matched.values())
+
+
+async def notify_matching_drivers(
+    bot: Bot,
+    cargo: dict[str, Any],
+    owner: dict[str, Any],
+    cargo_id: str,
+) -> tuple[list[int], list[str]]:
+    from_region = str(cargo.get("from_region") or "")
+    to_region = str(cargo.get("to_region") or "")
+    if not from_region or not to_region:
+        return [], []
+
+    drivers = await find_matching_drivers(from_region, to_region)
+    if not drivers:
+        return [], []
+
+    owner_id = cargo.get("owner_id")
+    bot_username = await get_bot_username(bot)
+    inline_markup = build_cargo_inline_keyboard(bot_username, cargo_id)
+    text = "🔔 Siz belgilagan yo'nalishga mos yangi yuk e'loni!\n\n" + build_cargo_post_text(cargo, owner, cargo_id)
+
+    sent: list[int] = []
+    failed: list[str] = []
+    for driver in drivers:
+        user_id = driver.get("_id")
+        if not isinstance(user_id, int):
+            continue
+        if owner_id == user_id:
+            continue
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=text,
+                reply_markup=inline_markup,
+                disable_web_page_preview=True,
+            )
+            sent.append(user_id)
+        except Exception as exc:  # noqa: BLE001
+            failed.append(f"{user_id}: {normalize_send_error(exc)}")
 
     return sent, failed
 
@@ -2139,16 +2302,21 @@ async def driver_volume(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(volume_m3=value)
     await state.set_state(DriverFSM.routes)
-    await message.answer("📍 Qaysi yo'nalishlarda ishlaysiz? (masalan: Toshkent-Samarqand-Farg'ona)")
+    await message.answer(
+        "📍 Yo'nalishlarni kiriting (masalan: Toshkent-Andijon yoki Toshkent-Andijon, Samarqand-Buxoro)"
+    )
 
 
 @dp.message(DriverFSM.routes)
 async def driver_routes(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
-    if len(text) < 3:
-        await message.answer("Yo'nalishni to'liqroq yozing.")
+    route_filters = parse_driver_route_filters(text)
+    if not route_filters:
+        await message.answer(
+            "Yo'nalishni formatda kiriting. Masalan: Toshkent-Andijon yoki Toshkent-Andijon, Samarqand-Buxoro"
+        )
         return
-    await state.update_data(routes=text)
+    await state.update_data(routes=text, route_filters=route_filters)
     await state.set_state(DriverFSM.price_per_km)
     await message.answer("💵 1 km uchun narx (ixtiyoriy):", reply_markup=skip_cancel_keyboard())
 
@@ -2184,6 +2352,8 @@ async def driver_note(message: Message, state: FSMContext) -> None:
         "capacity_ton": data.get("capacity_ton"),
         "volume_m3": data.get("volume_m3"),
         "routes": data.get("routes"),
+        "route_filters": normalize_driver_route_filters(data.get("route_filters"))
+        or parse_driver_route_filters(str(data.get("routes") or "")),
         "price_per_km": data.get("price_per_km"),
         "note": note,
     }
@@ -2259,12 +2429,16 @@ async def cargo_vehicle_type(message: Message, state: FSMContext) -> None:
     cargo_id = str(result.inserted_id)
 
     sent, failed = await publish_cargo(message.bot, cargo_doc, owner, cargo_id)
+    driver_sent, driver_failed = await notify_matching_drivers(message.bot, cargo_doc, owner, cargo_id)
     await cargo_col.update_one(
         {"_id": result.inserted_id},
         {
             "$set": {
                 "posted_chats": sent,
                 "post_failures": failed,
+                "driver_notify_user_ids": driver_sent,
+                "driver_notify_failures": driver_failed,
+                "driver_notify_sent_count": len(driver_sent),
                 "updated_at": now_utc(),
             }
         },
@@ -2274,15 +2448,22 @@ async def cargo_vehicle_type(message: Message, state: FSMContext) -> None:
         "✅ Yuk e'loningiz saqlandi va yuborildi.",
         f"🆔 E'lon ID: <code>{cargo_id}</code>",
         f"📤 Yuborilgan chatlar: <b>{len(sent)}</b>",
+        f"🔔 Mos haydovchilarga yuborildi: <b>{len(driver_sent)}</b>",
     ]
 
     if not sent:
         lines.append("⚠️ Hech bir viloyat chati ulanmagan. Admin paneldan viloyat chat ID larini kiriting.")
+    if not driver_sent:
+        lines.append("ℹ️ Bu yo'nalish bo'yicha filtr qo'ygan haydovchi topilmadi.")
     if failed:
         lines.append(f"❗ Yuborishda xatolar: <b>{len(failed)}</b>")
         preview_errors = failed[:3]
         lines.append("Sabab:")
         for err in preview_errors:
+            lines.append(f"• <code>{safe(err)}</code>")
+    if driver_failed:
+        lines.append(f"❗ Haydovchilarga yuborishda xatolar: <b>{len(driver_failed)}</b>")
+        for err in driver_failed[:3]:
             lines.append(f"• <code>{safe(err)}</code>")
 
     await open_main_menu(message, "\n".join(lines))
@@ -2316,7 +2497,7 @@ async def settings_change_role(message: Message, state: FSMContext) -> None:
         driver_profile.get("car_type")
         and driver_profile.get("capacity_ton")
         and driver_profile.get("volume_m3")
-        and driver_profile.get("routes")
+        and (driver_profile.get("routes") or normalize_driver_route_filters(driver_profile.get("route_filters")))
     )
     await users_col.update_one(
         {"_id": message.from_user.id},
