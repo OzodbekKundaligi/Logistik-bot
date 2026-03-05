@@ -279,6 +279,8 @@ RU_TEXT_TRANSLATIONS = {
     "Yuk qayerga boradi? Viloyatni tanlang:": "Куда отправляется груз? Выберите область:",
     "Yuk turini kiriting (masalan: sement, mebel, oziq-ovqat):": "Введите тип груза (например: цемент, мебель, продукты):",
     "Og'irligini kiriting (tonna):": "Введите вес (тонна):",
+    "Og'irligi:": "Вес:",
+    "Og'irlik:": "Вес:",
     "Kerakli mashina turini kiriting (masalan: fura, tent, isuzu):": "Введите нужный тип машины (например: фура, тент, isuzu):",
     "Mashina turini to'liqroq kiriting.": "Введите тип машины подробнее.",
     "Hajmini kiriting (m3):": "Введите объем (м3):",
@@ -297,6 +299,7 @@ RU_TEXT_TRANSLATIONS = {
     "To'lov turini tugmadan tanlang.": "Выберите тип оплаты кнопкой.",
     "Yuk turini to'liqroq kiriting.": "Укажите тип груза подробнее.",
     "Mashina turi juda qisqa. Qayta kiriting:": "Тип машины слишком короткий. Введите снова:",
+    "Maksimal yuk sig'imini kiriting (tonna):": "Введите максимальную грузоподъемность (тонна):",
     "Qaysi yo'nalishlarda ishlaysiz? (masalan: Toshkent-Samarqand-Farg'ona)": "По каким маршрутам работаете? (например: Ташкент-Самарканд-Фергана)",
     "Yo'nalishni to'liqroq yozing.": "Укажите маршрут подробнее.",
     "Yo'nalishlarni kiriting (masalan: Toshkent-Andijon yoki Toshkent-Andijon, Samarqand-Buxoro)": "Укажите маршруты (например: Ташкент-Андижан или Ташкент-Андижан, Самарканд-Бухара)",
@@ -333,6 +336,7 @@ RU_TEXT_TRANSLATIONS = {
     "Haydovchi anketasi": "Анкета водителя",
     "Mashina ma'lumoti": "Информация о машине",
     "Turi:": "Тип:",
+    "Maksimal sig'imi:": "Макс. грузоподъемность:",
     "Sig'imi:": "Грузоподъемность:",
     "Hajmi:": "Объем:",
     "Yo'nalish:": "Маршрут:",
@@ -415,15 +419,13 @@ class LanguageFSM(StatesGroup):
 class DriverFSM(StatesGroup):
     car_type = State()
     capacity_ton = State()
-    volume_m3 = State()
     routes = State()
-    price_per_km = State()
-    note = State()
 
 
 class CargoFSM(StatesGroup):
     from_region = State()
     to_region = State()
+    weight_ton = State()
     vehicle_type = State()
 
 
@@ -649,6 +651,17 @@ def parse_positive_number(value: str) -> Optional[float]:
     if parsed <= 0:
         return None
     return parsed
+
+
+def to_positive_float(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        parsed = float(value)
+        return parsed if parsed > 0 else None
+    if isinstance(value, str):
+        return parse_positive_number(value)
+    return None
 
 
 def parse_chat_id(value: str) -> Optional[int]:
@@ -1081,9 +1094,12 @@ async def handle_start_payload(message: Message, payload: str) -> None:
         return
 
     owner_name = f"{owner.get('first_name') or ''} {owner.get('last_name') or ''}".strip() or "Noma'lum"
+    weight_ton = to_positive_float(cargo.get("weight_ton"))
+    weight_text = f"{weight_ton:g} tonna" if weight_ton is not None else "-"
     lines = [
         "📨 <b>E'lon bo'yicha aloqa</b>",
         f"📍 Yo'nalish: <b>{safe(cargo.get('from_region'))} -> {safe(cargo.get('to_region'))}</b>",
+        f"⚖️ Og'irlik: <b>{safe(weight_text)}</b>",
         f"🚛 Kerakli mashina: <b>{safe(cargo.get('vehicle_type'))}</b>",
         f"👤 Ism: <b>{safe(owner_name)}</b>",
         f"📞 Telefon: <b>{safe(format_phone_for_display(owner.get('phone')))}</b>",
@@ -1553,11 +1569,8 @@ def build_profile_text(user: dict[str, Any]) -> str:
                 "",
                 "🚛 <b>Mashina ma'lumoti</b>",
                 f"• Turi: {safe(driver.get('car_type'))}",
-                f"• Sig'imi: {safe(driver.get('capacity_ton'))} tonna",
-                f"• Hajmi: {safe(driver.get('volume_m3'))} m3",
+                f"• Maksimal sig'imi: {safe(driver.get('capacity_ton'))} tonna",
                 f"• Yo'nalish: {safe(route_labels)}",
-                f"• Narx/km: {safe(driver.get('price_per_km'))}",
-                f"• Izoh: {safe(driver.get('note'))}",
             ]
         )
 
@@ -1578,7 +1591,6 @@ def profile_completeness(user: dict[str, Any]) -> tuple[int, list[str]]:
             [
                 ("Mashina turi", bool(driver.get("car_type"))),
                 ("Yuk sig'imi", bool(driver.get("capacity_ton"))),
-                ("Hajmi", bool(driver.get("volume_m3"))),
                 ("Yo'nalish", bool(driver.get("routes") or normalize_driver_route_filters(driver.get("route_filters")))),
             ]
         )
@@ -1604,6 +1616,7 @@ def build_cargo_preview(data: dict[str, Any]) -> str:
         "📦 <b>Yuk e'loni preview</b>\n"
         f"📍 Qayerdan: <b>{safe(data.get('from_region'))}</b>\n"
         f"🏁 Qayerga: <b>{safe(data.get('to_region'))}</b>\n"
+        f"⚖️ Og'irligi: <b>{safe(data.get('weight_ton'))} tonna</b>\n"
         f"🚛 Kerakli mashina: <b>{safe(data.get('vehicle_type'))}</b>\n"
     )
 
@@ -1611,6 +1624,8 @@ def build_cargo_preview(data: dict[str, Any]) -> str:
 def build_cargo_post_text(cargo: dict[str, Any], owner: dict[str, Any], cargo_id: str) -> str:
     from_region = str(cargo.get("from_region") or "-")
     to_region = str(cargo.get("to_region") or "-")
+    weight_ton = to_positive_float(cargo.get("weight_ton"))
+    weight_text = f"{weight_ton:g} tonna" if weight_ton is not None else "-"
     vehicle_type = str(cargo.get("vehicle_type") or "-")
 
     def _tag(raw: str) -> str:
@@ -1624,6 +1639,7 @@ def build_cargo_post_text(cargo: dict[str, Any], owner: dict[str, Any], cargo_id
     return (
         f"{pro_badge}"
         f"📦 <b>{safe(from_region)} → {safe(to_region)}</b>\n"
+        f"⚖️ {safe(weight_text)}\n"
         f"🚛 {safe(vehicle_type)}\n"
         f"📞 {safe(mask_phone(owner.get('phone')))}\n"
         f"#{route_tag} #{vehicle_tag}\n"
@@ -1693,7 +1709,16 @@ async def publish_cargo(
     return sent, failed
 
 
-async def find_matching_drivers(from_region: str, to_region: str) -> list[dict[str, Any]]:
+def driver_can_take_weight(driver_profile: dict[str, Any], weight_ton: Optional[float]) -> bool:
+    if weight_ton is None:
+        return True
+    capacity = to_positive_float(driver_profile.get("capacity_ton"))
+    if capacity is None:
+        return False
+    return capacity >= weight_ton
+
+
+async def find_matching_drivers(from_region: str, to_region: str, weight_ton: Optional[float] = None) -> list[dict[str, Any]]:
     if users_col is None:
         return []
 
@@ -1705,8 +1730,14 @@ async def find_matching_drivers(from_region: str, to_region: str) -> list[dict[s
     }
     async for user in users_col.find(query):
         user_id = user.get("_id")
-        if isinstance(user_id, int):
-            matched[user_id] = user
+        if not isinstance(user_id, int):
+            continue
+        driver_profile = user.get("driver_profile")
+        if not isinstance(driver_profile, dict):
+            continue
+        if not driver_can_take_weight(driver_profile, weight_ton):
+            continue
+        matched[user_id] = user
 
     fallback_query = {
         "role": ROLE_DRIVER,
@@ -1719,6 +1750,8 @@ async def find_matching_drivers(from_region: str, to_region: str) -> list[dict[s
             continue
         driver_profile = user.get("driver_profile")
         if not isinstance(driver_profile, dict):
+            continue
+        if not driver_can_take_weight(driver_profile, weight_ton):
             continue
         if normalize_driver_route_filters(driver_profile.get("route_filters")):
             continue
@@ -1739,7 +1772,8 @@ async def notify_matching_drivers(
     if not from_region or not to_region:
         return [], []
 
-    drivers = await find_matching_drivers(from_region, to_region)
+    weight_ton = to_positive_float(cargo.get("weight_ton"))
+    drivers = await find_matching_drivers(from_region, to_region, weight_ton=weight_ton)
     if not drivers:
         return [], []
 
@@ -2280,7 +2314,7 @@ async def driver_car_type(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(car_type=text)
     await state.set_state(DriverFSM.capacity_ton)
-    await message.answer("⚖️ Yuk sig'imini kiriting (tonna):")
+    await message.answer("⚖️ Maksimal yuk sig'imini kiriting (tonna):")
 
 
 @dp.message(DriverFSM.capacity_ton)
@@ -2290,17 +2324,6 @@ async def driver_capacity(message: Message, state: FSMContext) -> None:
         await message.answer("Raqam kiriting. Masalan: 20")
         return
     await state.update_data(capacity_ton=value)
-    await state.set_state(DriverFSM.volume_m3)
-    await message.answer("📐 Hajmini kiriting (m3):")
-
-
-@dp.message(DriverFSM.volume_m3)
-async def driver_volume(message: Message, state: FSMContext) -> None:
-    value = parse_positive_number(message.text or "")
-    if value is None:
-        await message.answer("Raqam kiriting. Masalan: 86")
-        return
-    await state.update_data(volume_m3=value)
     await state.set_state(DriverFSM.routes)
     await message.answer(
         "📍 Yo'nalishlarni kiriting (masalan: Toshkent-Andijon yoki Toshkent-Andijon, Samarqand-Buxoro)"
@@ -2309,6 +2332,9 @@ async def driver_volume(message: Message, state: FSMContext) -> None:
 
 @dp.message(DriverFSM.routes)
 async def driver_routes(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        return
+
     text = (message.text or "").strip()
     route_filters = parse_driver_route_filters(text)
     if not route_filters:
@@ -2317,45 +2343,15 @@ async def driver_routes(message: Message, state: FSMContext) -> None:
         )
         return
     await state.update_data(routes=text, route_filters=route_filters)
-    await state.set_state(DriverFSM.price_per_km)
-    await message.answer("💵 1 km uchun narx (ixtiyoriy):", reply_markup=skip_cancel_keyboard())
-
-
-@dp.message(DriverFSM.price_per_km)
-async def driver_price(message: Message, state: FSMContext) -> None:
-    text = (message.text or "").strip()
-    if text == BTN_SKIP:
-        await state.update_data(price_per_km=None)
-    else:
-        value = parse_positive_number(text)
-        if value is None:
-            await message.answer("Raqam kiriting yoki `⏭ O'tkazib yuborish` ni bosing.")
-            return
-        await state.update_data(price_per_km=value)
-
-    await state.set_state(DriverFSM.note)
-    await message.answer("📝 Qo'shimcha izoh (ixtiyoriy):", reply_markup=skip_cancel_keyboard())
-
-
-@dp.message(DriverFSM.note)
-async def driver_note(message: Message, state: FSMContext) -> None:
-    if not message.from_user:
-        return
-
-    text = (message.text or "").strip()
-    note = None if text == BTN_SKIP else text
     data = await state.get_data()
     await state.clear()
 
     driver_profile = {
         "car_type": data.get("car_type"),
         "capacity_ton": data.get("capacity_ton"),
-        "volume_m3": data.get("volume_m3"),
         "routes": data.get("routes"),
         "route_filters": normalize_driver_route_filters(data.get("route_filters"))
         or parse_driver_route_filters(str(data.get("routes") or "")),
-        "price_per_km": data.get("price_per_km"),
-        "note": note,
     }
 
     await users_col.update_one(
@@ -2390,6 +2386,17 @@ async def cargo_to_region(message: Message, state: FSMContext) -> None:
         await message.answer("Viloyatni tugmadan tanlang.", reply_markup=region_keyboard())
         return
     await state.update_data(to_region=region)
+    await state.set_state(CargoFSM.weight_ton)
+    await message.answer("⚖️ Og'irligini kiriting (tonna):", reply_markup=cancel_keyboard())
+
+
+@dp.message(CargoFSM.weight_ton)
+async def cargo_weight_ton(message: Message, state: FSMContext) -> None:
+    value = parse_positive_number(message.text or "")
+    if value is None:
+        await message.answer("Raqam kiriting. Masalan: 22")
+        return
+    await state.update_data(weight_ton=value)
     await state.set_state(CargoFSM.vehicle_type)
     await message.answer(
         "🚛 Kerakli mashina turini kiriting (masalan: fura, tent, isuzu):",
@@ -2420,6 +2427,7 @@ async def cargo_vehicle_type(message: Message, state: FSMContext) -> None:
         "owner_id": message.from_user.id,
         "from_region": data["from_region"],
         "to_region": data["to_region"],
+        "weight_ton": data.get("weight_ton"),
         "vehicle_type": data["vehicle_type"],
         "created_at": now_utc(),
         "status": "active",
@@ -2496,7 +2504,6 @@ async def settings_change_role(message: Message, state: FSMContext) -> None:
     profile_ready = bool(
         driver_profile.get("car_type")
         and driver_profile.get("capacity_ton")
-        and driver_profile.get("volume_m3")
         and (driver_profile.get("routes") or normalize_driver_route_filters(driver_profile.get("route_filters")))
     )
     await users_col.update_one(
